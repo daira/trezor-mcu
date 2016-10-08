@@ -59,7 +59,7 @@ int compile_output(const CoinType *coin, const HDNode *root, TxOutputType *in, T
 {
 	memset(out, 0, sizeof(TxOutputBinType));
 	out->amount = in->amount;
-	uint8_t addr_raw[21];
+	uint8_t addr_raw[MAX_ADDR_RAW_SIZE];
 
 	if (in->script_type == OutputScriptType_PAYTOADDRESS) {
 
@@ -80,10 +80,7 @@ int compile_output(const CoinType *coin, const HDNode *root, TxOutputType *in, T
 					return -1;
 				}
 			}
-			if (!ecdsa_address_decode(in->address, addr_raw)) {
-				return 0;
-			}
-			if (addr_raw[0] != coin->address_type) {
+			if (!ecdsa_address_decode(in->address, coin->address_type, addr_raw)) {
 				return 0;
 			}
 		} else { // does not have address_n neither address -> error
@@ -93,7 +90,15 @@ int compile_output(const CoinType *coin, const HDNode *root, TxOutputType *in, T
 		out->script_pubkey.bytes[0] = 0x76; // OP_DUP
 		out->script_pubkey.bytes[1] = 0xA9; // OP_HASH_160
 		out->script_pubkey.bytes[2] = 0x14; // pushing 20 bytes
-		memcpy(out->script_pubkey.bytes + 3, addr_raw + 1, 20);
+		if (coin->address_type <= 0xFF) {
+			memcpy(out->script_pubkey.bytes + 3, addr_raw + 1, 20);
+		} else if (coin->address_type <= 0xFFFF) {
+			memcpy(out->script_pubkey.bytes + 3, addr_raw + 2, 20);
+		} else if (coin->address_type <= 0xFFFFFF) {
+			memcpy(out->script_pubkey.bytes + 3, addr_raw + 3, 20);
+		} else {
+			memcpy(out->script_pubkey.bytes + 3, addr_raw + 4, 20);
+		}
 		out->script_pubkey.bytes[23] = 0x88; // OP_EQUALVERIFY
 		out->script_pubkey.bytes[24] = 0xAC; // OP_CHECKSIG
 		out->script_pubkey.size = 25;
@@ -101,10 +106,7 @@ int compile_output(const CoinType *coin, const HDNode *root, TxOutputType *in, T
 	}
 
 	if (in->script_type == OutputScriptType_PAYTOSCRIPTHASH) {
-		if (!in->has_address || !ecdsa_address_decode(in->address, addr_raw)) {
-			return 0;
-		}
-		if (addr_raw[0] != coin->address_type_p2sh) {
+		if (!in->has_address || !ecdsa_address_decode(in->address, coin->address_type_p2sh, addr_raw)) {
 			return 0;
 		}
 		if (needs_confirm) {
@@ -115,6 +117,15 @@ int compile_output(const CoinType *coin, const HDNode *root, TxOutputType *in, T
 		}
 		out->script_pubkey.bytes[0] = 0xA9; // OP_HASH_160
 		out->script_pubkey.bytes[1] = 0x14; // pushing 20 bytes
+		if (coin->address_type_p2sh <= 0xFF) {
+			memcpy(out->script_pubkey.bytes + 2, addr_raw + 1, 20);
+		} else if (coin->address_type <= 0xFFFF) {
+			memcpy(out->script_pubkey.bytes + 2, addr_raw + 2, 20);
+		} else if (coin->address_type <= 0xFFFFFF) {
+			memcpy(out->script_pubkey.bytes + 2, addr_raw + 3, 20);
+		} else {
+			memcpy(out->script_pubkey.bytes + 2, addr_raw + 4, 20);
+		}
 		memcpy(out->script_pubkey.bytes + 2, addr_raw + 1, 20);
 		out->script_pubkey.bytes[22] = 0x87; // OP_EQUAL
 		out->script_pubkey.size = 23;
@@ -129,10 +140,30 @@ int compile_output(const CoinType *coin, const HDNode *root, TxOutputType *in, T
 		if (compile_script_multisig_hash(&(in->multisig), buf) == 0) {
 			return 0;
 		}
-		addr_raw[0] = coin->address_type_p2sh;
-		ripemd160(buf, 32, addr_raw + 1);
-		if (needs_confirm) {
+		if (coin->address_type_p2sh <= 0xFF) {
+			addr_raw[0] = coin->address_type_p2sh;
+			ripemd160(buf, 32, addr_raw + 1);
 			base58_encode_check(addr_raw, 21, in->address, sizeof(in->address));
+		} else if (coin->address_type_p2sh <= 0xFFFF) {
+			addr_raw[0] = coin->address_type_p2sh >> 8;
+			addr_raw[1] = coin->address_type_p2sh & 0xFF;
+			ripemd160(buf, 32, addr_raw + 2);
+			base58_encode_check(addr_raw, 22, in->address, sizeof(in->address));
+		} else if (coin->address_type_p2sh <= 0xFFFFFF) {
+			addr_raw[0] = coin->address_type_p2sh >> 16;
+			addr_raw[1] = (coin->address_type_p2sh >> 8) & 0xFF;
+			addr_raw[2] = coin->address_type_p2sh & 0xFF;
+			ripemd160(buf, 32, addr_raw + 3);
+			base58_encode_check(addr_raw, 23, in->address, sizeof(in->address));
+		} else {
+			addr_raw[0] = coin->address_type_p2sh >> 24;
+			addr_raw[1] = (coin->address_type_p2sh >> 16) & 0xFF;
+			addr_raw[2] = (coin->address_type_p2sh >> 8) & 0xFF;
+			addr_raw[3] = coin->address_type_p2sh & 0xFF;
+			ripemd160(buf, 32, addr_raw + 4);
+			base58_encode_check(addr_raw, 27, in->address, sizeof(in->address));
+		}
+		if (needs_confirm) {
 			layoutConfirmOutput(coin, in);
 			if (!protectButton(ButtonRequestType_ButtonRequest_ConfirmOutput, false)) {
 				return -1;
@@ -140,7 +171,15 @@ int compile_output(const CoinType *coin, const HDNode *root, TxOutputType *in, T
 		}
 		out->script_pubkey.bytes[0] = 0xA9; // OP_HASH_160
 		out->script_pubkey.bytes[1] = 0x14; // pushing 20 bytes
-		memcpy(out->script_pubkey.bytes + 2, addr_raw + 1, 20);
+		if (coin->address_type_p2sh <= 0xFF) {
+			memcpy(out->script_pubkey.bytes + 2, addr_raw + 1, 20);
+		} else if (coin->address_type_p2sh <= 0xFFFF) {
+			memcpy(out->script_pubkey.bytes + 2, addr_raw + 2, 20);
+		} else if (coin->address_type_p2sh <= 0xFFFFFF) {
+			memcpy(out->script_pubkey.bytes + 2, addr_raw + 3, 20);
+		} else {
+			memcpy(out->script_pubkey.bytes + 2, addr_raw + 4, 20);
+		}
 		out->script_pubkey.bytes[22] = 0x87; // OP_EQUAL
 		out->script_pubkey.size = 23;
 		return 23;
